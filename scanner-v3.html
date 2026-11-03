@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Welcome Party 90s — QR Scanner V3</title>
+  <style>
+    :root{--teal:#173f43;--gold:#f2b321;--paper:#fff8eb;--red:#a9362b;--ink:#172526;--muted:#687273}
+    *{box-sizing:border-box}body{margin:0;padding:24px;background:linear-gradient(135deg,#173f43,#24585a 58%,#a13e31);font-family:Arial,Helvetica,sans-serif;color:var(--ink);min-height:100vh}
+    .card{max-width:720px;margin:0 auto;background:var(--paper);padding:26px;border-radius:22px;box-shadow:0 16px 42px #0003}.brand{font-size:13px;font-weight:900;letter-spacing:2px;color:var(--red)}h1{font-size:32px;margin:8px 0;color:var(--teal)}p{line-height:1.55;color:#4e5c5d}.notice{background:#f7dfda;color:#812f25;border-radius:12px;padding:14px;margin:16px 0;font-weight:700}.notice.ok{background:#e6f0e6;color:#22543d}.notice.warn{background:#fff0d2;color:#755000}#reader{width:100%;min-height:210px;background:#111;border-radius:16px;overflow:hidden;margin:16px 0}button{border:0;border-radius:12px;padding:14px 20px;font-weight:900;font-size:16px;cursor:pointer;margin:4px 6px 4px 0}.primary{background:var(--teal);color:#fff}.gold{background:var(--gold);color:#30260d}.secondary{background:#eee1c8;color:var(--teal)}.row{display:flex;gap:8px;flex-wrap:wrap}input{min-width:220px;flex:1;border:1px solid #dfd0b6;border-radius:11px;padding:13px;font-size:16px;background:#fff}small{display:block;color:var(--muted);line-height:1.5;margin-top:16px}.hidden{display:none!important}@media(max-width:600px){body{padding:12px}.card{padding:19px}h1{font-size:27px}}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand">WELCOME PARTY 90s · ATTENDANCE DESK</div>
+    <h1>Scan QR Pass</h1>
+    <p>Arahkan kamera ke QR pass peserta. Setelah QR terbaca, hasil pemindaian dikirim kembali ke halaman check-in panitia.</p>
+    <div id="status" class="notice warn">Memeriksa koneksi ke halaman check-in...</div>
+    <div id="reader"></div>
+    <div class="row">
+      <button id="startBtn" class="primary" type="button">Aktifkan kamera</button>
+      <button id="stopBtn" class="gold" type="button">Matikan kamera</button>
+    </div>
+    <h2 style="color:var(--teal);font-size:19px;margin-top:24px">Input manual / scanner USB</h2>
+    <div class="row"><input id="manualValue" placeholder="Tempel URL QR, token, atau kode WP90"><button id="sendBtn" class="secondary" type="button">Kirim</button></div>
+    <small>Halaman ini harus dibuka melalui tombol <b>Buka Pemindai Kamera</b> pada Web App panitia. Kamera memerlukan izin browser dan koneksi HTTPS. Hasil scan dikirim ke jendela check-in yang membukanya; halaman ini tidak menyimpan data peserta.</small>
+  </main>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const parentOrigin = params.get('parentOrigin') || '';
+    const statusBox = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    let scanner = null;
+    let scannerRunning = false;
+    let resultSent = false;
+    let libraryPromise = null;
+
+    // Load Html5Qrcode from reliable CDN URLs. The previous /minified/ URL
+    // was not the correct package-root path and could leave Html5Qrcode undefined.
+    const LIBRARY_URLS = [
+      'https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js',
+      'https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js',
+      'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js'
+    ];
+
+    function loadScannerLibrary() {
+      if (window.Html5Qrcode) return Promise.resolve(true);
+      if (libraryPromise) return libraryPromise;
+      libraryPromise = (async () => {
+        const failures = [];
+        for (const src of LIBRARY_URLS) {
+          try {
+            await new Promise((resolve, reject) => {
+              const script = document.createElement('script');
+              script.src = src;
+              script.async = true;
+              script.onload = () => window.Html5Qrcode ? resolve() : reject(new Error('Library termuat tetapi Html5Qrcode tidak tersedia.'));
+              script.onerror = () => reject(new Error('Tidak dapat mengakses ' + new URL(src).hostname));
+              document.head.appendChild(script);
+            });
+            if (window.Html5Qrcode) {
+              setStatus('Library pemindai berhasil dimuat. Siap mengaktifkan kamera.', 'ok');
+              return true;
+            }
+          } catch (err) {
+            failures.push(err.message || String(err));
+          }
+        }
+        throw new Error('Semua sumber library gagal dimuat. Periksa koneksi internet atau pemblokir CDN. (' + failures.join(' | ') + ')');
+      })().finally(() => { libraryPromise = null; });
+      return libraryPromise;
+    }
+
+    function setStatus(message, type='warn') {
+      statusBox.className = 'notice ' + type;
+      statusBox.textContent = message;
+    }
+
+    function validateParent() {
+      if (!window.opener) {
+        setStatus('Buka pemindai ini melalui tombol dari halaman Check-in Web App. Jangan membuka URL scanner secara langsung.', 'warn');
+        startBtn.disabled = true;
+        return false;
+      }
+      if (!parentOrigin || !/^https:\/\//i.test(parentOrigin)) {
+        setStatus('Alamat halaman check-in tidak terbaca. Tutup jendela ini, lalu buka scanner dari tombol Check-in Web App.', 'warn');
+        startBtn.disabled = true;
+        return false;
+      }
+      setStatus('Terhubung ke halaman check-in. Memuat library pemindai...', 'warn');
+      loadScannerLibrary().then(() => { if (!scannerRunning) setStatus('Terhubung dan siap. Tekan Aktifkan kamera untuk mulai scan.', 'ok'); }).catch(err => setStatus(err.message, 'warn'));
+      return true;
+    }
+
+    function sendResult(text) {
+      if (resultSent) return;
+      const value = String(text || '').trim();
+      if (!value) return;
+      if (!window.opener || !parentOrigin) {
+        setStatus('Jendela check-in tidak terhubung. Tutup scanner dan buka kembali dari Web App panitia.', 'warn');
+        return;
+      }
+      resultSent = true;
+      try {
+        window.opener.postMessage({ type: 'WP90_QR_SCAN', text: value }, parentOrigin);
+        setStatus('QR terbaca. Mengirim hasil ke halaman check-in...', 'ok');
+        stopCamera();
+      } catch (err) {
+        resultSent = false;
+        setStatus('Gagal mengirim hasil scan: ' + err.message, 'warn');
+      }
+    }
+
+    async function startCamera() {
+      if (!validateParent()) return;
+      if (scannerRunning) return;
+      try {
+        if (!window.Html5Qrcode) {
+          setStatus('Memuat library pemindai...', 'warn');
+          await loadScannerLibrary();
+        }
+        if (!scanner) scanner = new Html5Qrcode('reader');
+        const cameras = await Html5Qrcode.getCameras();
+        if (!cameras || !cameras.length) throw new Error('Kamera tidak ditemukan pada perangkat ini.');
+        const preferred = cameras.find(c => /back|rear|environment/i.test(c.label)) || cameras[cameras.length - 1];
+        await scanner.start(
+          preferred.id,
+          { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1.0 },
+          decodedText => sendResult(decodedText),
+          () => {}
+        );
+        scannerRunning = true;
+        setStatus('Kamera aktif. Arahkan ke QR Pass peserta.', 'ok');
+      } catch (err) {
+        setStatus('Kamera gagal diaktifkan: ' + (err && err.message ? err.message : String(err)) + '. Pastikan izin kamera diberikan.', 'warn');
+      }
+    }
+
+    async function stopCamera() {
+      if (!scanner || !scannerRunning) return;
+      try { await scanner.stop(); } catch (err) {}
+      scannerRunning = false;
+    }
+
+    startBtn.addEventListener('click', startCamera);
+    stopBtn.addEventListener('click', async () => {
+      await stopCamera();
+      if (!resultSent) setStatus('Kamera dimatikan.', 'warn');
+    });
+    document.getElementById('sendBtn').addEventListener('click', () => sendResult(document.getElementById('manualValue').value));
+    document.getElementById('manualValue').addEventListener('keydown', e => { if (e.key === 'Enter') sendResult(e.target.value); });
+    window.addEventListener('beforeunload', () => { stopCamera(); });
+    validateParent();
+  </script>
+</body>
+</html>
